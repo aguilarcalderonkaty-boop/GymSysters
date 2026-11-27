@@ -98,6 +98,7 @@ const state = {
   calMonth: firstOfMonth(new Date()),
   progress: { type: 'ejercicio', exercise: '', measure: 'weight', who: 'ambas', range: '3m' },
   measWho: null,
+  currentDay: todayStr(),  // para detectar cuando la app sigue abierta y cambia el día
   wellDate: todayStr(),
   wellDraft: null,
   agenda: {},            // { "<usuaria>_<lunes de la semana>": { weekly: [], days: { lunes: [] ... } } }
@@ -140,6 +141,43 @@ function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 function fmtDate(s, opts = { day: 'numeric', month: 'short' }) {
   return parseDate(s).toLocaleDateString('es-MX', opts);
 }
+/** "14:30" -> "2:30 pm" */
+function fmtTime(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const suffix = h < 12 ? 'am' : 'pm';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+/** Selector de hora en formato de 12 horas (hora, minutos, am/pm). */
+function timePicker(name, { value = '', required = false, label = '' } = {}) {
+  let h = '', m = '00', p = 'am';
+  if (value) {
+    const [hh, mm] = value.split(':').map(Number);
+    h = String(hh % 12 || 12); m = String(mm).padStart(2, '0'); p = hh < 12 ? 'am' : 'pm';
+  }
+  const sel = 'bg-cream border border-[#DFD5CA] focus:border-blush-300 rounded-xl px-2 py-2.5 text-sm font-semibold outline-none appearance-none text-center';
+  const mins = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'];
+  return `<div class="flex items-center gap-1" role="group" aria-label="${label}">
+    <select name="${name}-h" ${required ? 'required' : ''} aria-label="Hora" class="${sel} flex-1 min-w-0">
+      <option value="">--</option>${Array.from({ length: 12 }, (_, i) => i + 1).map(n => `<option value="${n}" ${String(n) === h ? 'selected' : ''}>${n}</option>`).join('')}
+    </select>
+    <span class="text-stone-400 font-bold">:</span>
+    <select name="${name}-m" aria-label="Minutos" class="${sel} flex-1 min-w-0">${mins.map(v => `<option ${v === m ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <select name="${name}-p" aria-label="am o pm" class="${sel} flex-1 min-w-0"><option value="am" ${p === 'am' ? 'selected' : ''}>am</option><option value="pm" ${p === 'pm' ? 'selected' : ''}>pm</option></select>
+  </div>`;
+}
+
+/** Lee un timePicker y devuelve "HH:MM" (24 h, como se guarda) o "". */
+function readTime(form, name) {
+  const h = parseInt(form.elements[`${name}-h`]?.value, 10);
+  if (!h) return '';
+  const m = form.elements[`${name}-m`].value;
+  const pm = form.elements[`${name}-p`].value === 'pm';
+  const hh = (h % 12) + (pm ? 12 : 0);
+  return `${String(hh).padStart(2, '0')}:${m}`;
+}
+
 function daysBetween(a, b) { return Math.round((parseDate(b) - parseDate(a)) / 86400000); }
 function norm(s) { return (s || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
 function esc(str) {
@@ -505,7 +543,7 @@ function reminders() {
       const t = EVENT_TYPES[e.type] || EVENT_TYPES.otro;
       list.push({
         id: `evento-${e.id}-${ds}`, icon: t.icon, tone: 'blush',
-        title: `${when}: ${e.title}`, body: `${t.label}${e.time ? ` a las ${e.time}` : ''}`, tab: 'horario',
+        title: `${when}: ${e.title}`, body: `${t.label}${e.time ? ` a las ${fmtTime(e.time)}` : ''}`, tab: 'horario',
       });
     });
   });
@@ -1445,6 +1483,11 @@ function viewBienestar() {
       <button data-action="well-day" data-value="1" aria-label="Día siguiente" ${isToday ? 'disabled' : ''}
         class="p-2.5 rounded-2xl bg-cream hover:bg-blush-50 border border-[#E5DDD3] disabled:opacity-30 disabled:pointer-events-none">${icon('chevron-right')}</button>
     </div>
+    ${isToday ? '' : `
+    <div class="mt-3 flex items-center justify-between gap-3 bg-peach-50 border border-peach-200 rounded-2xl px-3.5 py-2.5">
+      <p class="text-xs font-bold text-peach-400">Estás viendo un día pasado. Lo que guardes cambia ese día.</p>
+      <button data-action="well-today" class="text-xs font-bold text-ink bg-paper border border-[#E5DDD3] px-3 py-1.5 rounded-full shrink-0">Ir a hoy</button>
+    </div>`}
   `)}
 
   ${card(`
@@ -1588,7 +1631,7 @@ function itemTitle(item) {
 }
 
 function agendaItem(item, list, day = '') {
-  const range = item.time ? `${esc(item.time)}${item.end ? `–${esc(item.end)}` : ''}` : '';
+  const range = item.time ? `${fmtTime(item.time)}${item.end ? ` – ${fmtTime(item.end)}` : ''}` : '';
   const dur = minutesBetween(item.time, item.end);
   const title = itemTitle(item);
   const note = item.cat && item.text ? item.text : '';
@@ -1639,7 +1682,7 @@ function upcomingEvents(days = 60) {
 function eventChip(e, small = false) {
   const t = EVENT_TYPES[e.type] || EVENT_TYPES.otro;
   return `<span class="inline-flex items-center gap-1 ${small ? 'text-[10px] px-1.5 py-0.5' : 'text-xs px-2 py-1'} font-bold rounded-full border ${t.chip} max-w-full">
-    ${icon(t.icon, small ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0')}<span class="truncate">${e.time ? `${esc(e.time)} · ` : ''}${esc(e.title)}</span></span>`;
+    ${icon(t.icon, small ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0')}<span class="truncate">${e.time ? `${fmtTime(e.time)} · ` : ''}${esc(e.title)}</span></span>`;
 }
 
 function viewHorarioCalendar() {
@@ -1719,10 +1762,11 @@ function openEventDay(ds) {
           <span class="flex flex-col items-center gap-1 py-2 rounded-xl border text-[10px] font-bold bg-paper border-[#E5DDD3] text-stone-500 ${t.picked}">${icon(t.icon)}${t.label}</span>
         </label>`).join('')}
       </div>
-      <div class="flex gap-2">
-        <input name="time" type="time" aria-label="Hora (opcional)" class="w-32 bg-paper border border-[#DFD5CA] rounded-2xl px-3 py-2.5 text-sm outline-none">
-        <button type="submit" class="flex-1 ${btnPrimary} py-2.5">Guardar</button>
+      <div class="grid grid-cols-[3.5rem_1fr] items-center gap-2">
+        <span class="text-xs font-bold text-stone-600">Hora <span class="font-medium text-stone-400">(opc.)</span></span>
+        ${timePicker('time', { label: 'Hora (opcional)' })}
       </div>
+      <button type="submit" class="w-full ${btnPrimary} py-2.5">Guardar</button>
     </form>
   `);
 }
@@ -1774,11 +1818,11 @@ function openActivity(dayKey) {
       </div>
       ${subBlock('work', '¿En qué trabajarás?', opts.work, 'Otro trabajo…')}
       ${subBlock('study', '¿Qué estudiarás?', opts.study, opts.study.length ? 'Otra materia…' : 'Ej. Inglés, Cálculo…')}
-      <div class="grid grid-cols-2 gap-2">
-        <label class="block"><span class="block text-xs font-bold text-stone-600 mb-1">De</span>
-          <input name="time" type="time" required class="w-full bg-cream border border-[#DFD5CA] focus:border-blush-300 rounded-xl px-3 py-2.5 text-sm outline-none"></label>
-        <label class="block"><span class="block text-xs font-bold text-stone-600 mb-1">A</span>
-          <input name="end" type="time" required class="w-full bg-cream border border-[#DFD5CA] focus:border-blush-300 rounded-xl px-3 py-2.5 text-sm outline-none"></label>
+      <div class="space-y-2">
+        <div class="grid grid-cols-[2rem_1fr] items-center gap-2"><span class="text-xs font-bold text-stone-600">De</span>
+          ${timePicker('time', { required: true, label: 'Hora de inicio' })}</div>
+        <div class="grid grid-cols-[2rem_1fr] items-center gap-2"><span class="text-xs font-bold text-stone-600">A</span>
+          ${timePicker('end', { required: true, label: 'Hora de fin' })}</div>
       </div>
       <input name="note" maxlength="80" placeholder="Nota (opcional)" class="${inputCls}">
       <button type="submit" class="w-full ${btnPrimary}">Agregar</button>
@@ -1879,13 +1923,20 @@ function viewHorarioWeek() {
 
   return `
   ${card(`
-    <div class="flex items-center justify-between gap-2">
-      <button data-action="agenda-week" data-value="-7" aria-label="Semana anterior" class="p-2.5 rounded-2xl bg-cream hover:bg-blush-50 border border-[#E5DDD3]">${icon('chevron-left')}</button>
-      <div class="text-center">
-        <h2 class="font-display font-bold text-xl text-ink">${isThisWeek ? 'Esta semana' : 'Semana'}</h2>
-        <p class="text-xs text-stone-500 font-semibold">${fmtDate(week, { day: 'numeric', month: 'short' })} – ${fmtDate(addDays(week, 6), { day: 'numeric', month: 'short' })}</p>
-      </div>
-      <button data-action="agenda-week" data-value="7" aria-label="Semana siguiente" class="p-2.5 rounded-2xl bg-cream hover:bg-blush-50 border border-[#E5DDD3]">${icon('chevron-right')}</button>
+    <div class="text-center">
+      <h2 class="font-display font-bold text-xl text-ink">${isThisWeek ? 'Esta semana' : week > mondayOf(todayStr()) ? 'Semana próxima' : 'Semana pasada'}</h2>
+      <p class="text-xs text-stone-500 font-semibold">${fmtDate(week, { day: 'numeric', month: 'short' })} – ${fmtDate(addDays(week, 6), { day: 'numeric', month: 'short' })}</p>
+    </div>
+    <div class="grid grid-cols-2 gap-2 mt-3">
+      <button data-action="agenda-week" data-value="-7" class="inline-flex items-center justify-center gap-1 text-xs font-bold text-stone-600 bg-cream hover:bg-blush-50 border border-[#E5DDD3] rounded-xl py-2.5">${icon('chevron-left', 'w-3.5 h-3.5')} Semana anterior</button>
+      <button data-action="agenda-week" data-value="7" class="inline-flex items-center justify-center gap-1 text-xs font-bold text-white bg-blush-400 hover:bg-blush-500 rounded-xl py-2.5">Siguiente semana ${icon('chevron-right', 'w-3.5 h-3.5')}</button>
+    </div>
+    <div class="flex items-center gap-2 mt-2">
+      <label class="flex-1 flex items-center gap-2 text-xs font-bold text-stone-500 bg-cream border border-[#E5DDD3] rounded-xl px-3 py-1.5">
+        Ir a la semana del
+        <input type="date" data-change="agenda-jump" value="${week}" class="flex-1 min-w-0 bg-transparent text-ink outline-none">
+      </label>
+      ${isThisWeek ? '' : `<button data-action="agenda-today" class="text-xs font-bold text-blush-500 bg-paper border border-blush-200 rounded-xl px-3 py-2 shrink-0">Esta semana</button>`}
     </div>
   `)}
 
@@ -2150,6 +2201,9 @@ const ACTIONS = {
     showToast('Volviste a la rutina del día');
   },
 
+  'well-today'() { state.wellDate = todayStr(); render(); },
+  'agenda-today'() { state.agendaWeek = mondayOf(todayStr()); render(); },
+
   // Horario: actividades y tiempo
   'activity-new'(el) { openActivity(el.dataset.day); },
   'tiempo-period'(el) { state.tiempoPeriod = el.dataset.value; render(); },
@@ -2188,6 +2242,7 @@ const CHANGES = {
   'prog-measure'(v) { state.progress.measure = v; render(); },
   'prog-who'(v) { state.progress.who = v; render(); },
   'prog-range'(v) { state.progress.range = v; render(); },
+  'agenda-jump'(v) { if (v) { state.agendaWeek = mondayOf(v); render(); } },
 };
 
 const SUBMITS = {
@@ -2241,7 +2296,7 @@ const SUBMITS = {
     const ds = form.dataset.date;
     const ev = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      date: ds, title, type: form.querySelector('input[name="type"]:checked')?.value || 'otro', time: form.time.value || '',
+      date: ds, title, type: form.querySelector('input[name="type"]:checked')?.value || 'otro', time: readTime(form, 'time'),
     };
     await saveEvents([...myEvents(), ev]);
     openEventDay(ds);
@@ -2262,7 +2317,7 @@ const SUBMITS = {
         await saveOptions(opts);
       }
     }
-    const start = form.elements.time.value, end = form.elements.end.value;
+    const start = readTime(form, 'time'), end = readTime(form, 'end');
     if (!start || !end) return showToast('Pon la hora de inicio y de fin');
     const doc = agendaDoc();
     doc.days[form.dataset.day].push({
@@ -2389,6 +2444,29 @@ function startData() {
     if (!isSynced && store.getMode() === 'firebase') showToast('Sin conexión: se guardará al volver internet');
   });
 }
+
+/**
+ * En el celular la app se queda abierta en segundo plano. Si al volver ya es otro día,
+ * todo lo que apuntaba a "hoy" (Bienestar, semana del horario, meses) pasa al nuevo día,
+ * para no guardar encima del día anterior.
+ */
+function checkNewDay() {
+  const today = todayStr();
+  const prev = state.currentDay;
+  if (today === prev) return;
+  state.currentDay = today;
+  if (state.wellDate === prev) { state.wellDate = today; state.wellDraft = null; }
+  if (state.agendaWeek === mondayOf(prev)) state.agendaWeek = mondayOf(today);
+  const prevMonth = firstOfMonth(parseDate(prev)).getTime();
+  ['calMonth', 'horarioMonth', 'tiempoMonth'].forEach(k => {
+    if (state[k].getTime() === prevMonth) state[k] = firstOfMonth(new Date());
+  });
+  closeModal();
+  if (state.user) scheduleRender();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkNewDay(); });
+window.addEventListener('focus', checkNewDay);
+setInterval(checkNewDay, 60 * 1000);
 
 function resetData() {
   Object.assign(state, {

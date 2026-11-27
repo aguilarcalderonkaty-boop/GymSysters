@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Solo estas dos cuentas (creadas a mano en Authentication) pueden entrar.
+    function isKatia() {
+      return request.auth != null && request.auth.token.email == 'katy@gymsisters.com';
+    }
+    function isMariana() {
+      return request.auth != null && request.auth.token.email == 'mariana@gymsisters.com';
+    }
+    function isMember() {
+      return isKatia() || isMariana();
+    }
+    function myId() {
+      return isKatia() ? 'katia' : 'mariana';
+    }
+
+    // Horario y fechas importantes: privados, cada una solo ve y edita lo suyo.
+    match /spaces/{space}/agenda/{docId} {
+      allow read, delete: if isMember() && resource.data.bestie == myId();
+      allow create, update: if isMember() && request.resource.data.bestie == myId();
+    }
+
+    // Todo lo demás (rutinas, entrenamientos, asistencia, medidas, bienestar) es compartido entre las dos.
+    match /spaces/{space}/{collection}/{docId} {
+      allow read, write: if isMember() && collection != 'agenda';
+    }
+
+    // Cualquier otra ruta: bloqueada.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

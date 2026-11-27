@@ -1,0 +1,10 @@
+{
+  "name": "Gym Systers",
+  "short_name": "Gym Systers",
+  "description": "Nuestro diario compartido de gimnasio",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#FAF6F0",
+  "theme_color": "#FAF6F0",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

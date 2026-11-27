@@ -3,7 +3,7 @@ import Chart from 'chart.js/auto';
 import {
   createIcons, House, Dumbbell, ChartLine, Ruler, CalendarDays, Moon, LogOut, Pencil,
   Plus, Trash2, X, ChevronLeft, ChevronRight, Check, Heart, Minus, NotebookPen, Lock,
-  BookOpen, Timer, Search, Cake, PartyPopper, Star, Stethoscope, ExternalLink,
+  BookOpen, Timer, Search, Cake, PartyPopper, Star, Stethoscope, ExternalLink, GraduationCap,
 } from 'lucide';
 import * as store from './store.js';
 import { USERS, login, logout, restoreSession } from './auth.js';
@@ -103,7 +103,7 @@ const state = {
   wellDraft: null,
   agenda: {},            // { "<usuaria>_<lunes de la semana>": { weekly: [], days: { lunes: [] ... } } }
   agendaWeek: mondayOf(todayStr()),
-  horarioView: 'semana',
+  horarioView: 'calendario',
   tiempoPeriod: 'semana',
   tiempoMonth: firstOfMonth(new Date()),
   plans: {},             // rutina cambiada por día: { "<fecha>_<usuaria>": { day: 'lunes' } }
@@ -117,7 +117,7 @@ const EVENT_TYPES = {
   cumple: { label: 'Cumpleaños', icon: 'cake', dot: 'bg-blush-400', chip: 'bg-blush-100 text-blush-500 border-blush-200', picked: 'peer-checked:bg-blush-100 peer-checked:text-blush-500 peer-checked:border-blush-300' },
   salida: { label: 'Salida', icon: 'party-popper', dot: 'bg-lavender-400', chip: 'bg-lavender-100 text-lavender-500 border-lavender-200', picked: 'peer-checked:bg-lavender-100 peer-checked:text-lavender-500 peer-checked:border-lavender-300' },
   cita: { label: 'Cita', icon: 'stethoscope', dot: 'bg-sage-400', chip: 'bg-sage-100 text-sage-500 border-sage-200', picked: 'peer-checked:bg-sage-100 peer-checked:text-sage-500 peer-checked:border-sage-300' },
-  otro: { label: 'Importante', icon: 'star', dot: 'bg-peach-400', chip: 'bg-peach-100 text-peach-400 border-peach-200', picked: 'peer-checked:bg-peach-100 peer-checked:text-peach-400 peer-checked:border-peach-200' },
+  otro: { label: 'Evaluación', icon: 'graduation-cap', dot: 'bg-peach-400', chip: 'bg-peach-100 text-peach-400 border-peach-200', picked: 'peer-checked:bg-peach-100 peer-checked:text-peach-400 peer-checked:border-peach-200' },
 };
 
 let chart = null;
@@ -221,7 +221,7 @@ function drawIcons() {
   createIcons({
     icons: {
       House, Dumbbell, ChartLine, Ruler, CalendarDays, Moon, LogOut, Pencil, Plus, Trash2, X, ChevronLeft, ChevronRight,
-      Check, Heart, Minus, NotebookPen, Lock, BookOpen, Timer, Search, Cake, PartyPopper, Star, Stethoscope, ExternalLink,
+      Check, Heart, Minus, NotebookPen, Lock, BookOpen, Timer, Search, Cake, PartyPopper, Star, Stethoscope, ExternalLink, GraduationCap,
     },
   });
 }
@@ -1558,21 +1558,41 @@ function wellnessWeek() {
 // HORARIO: agenda privada de cada una
 // =========================================================
 
-function agendaKey() { return `${state.user.id}_${state.agendaWeek}`; }
+// ---------- Datos del horario (una sola fuente para Semana y Calendario) ----------
 
-function agendaDoc() {
-  const saved = state.agenda[agendaKey()];
+function weekKey(week) { return `${state.user.id}_${week}`; }
+function agendaKey() { return weekKey(state.agendaWeek); }
+
+function agendaDocFor(week) {
+  const saved = state.agenda[weekKey(week)];
   const days = {};
   DAYS.forEach(d => { days[d.key] = [...(saved?.days?.[d.key] || [])]; });
   return { weekly: [...(saved?.weekly || [])], days };
 }
+function agendaDoc() { return agendaDocFor(state.agendaWeek); }
 
-async function saveAgenda(doc) {
-  const key = agendaKey();
-  const payload = { bestie: state.user.id, week: state.agendaWeek, weekly: doc.weekly, days: doc.days };
+async function saveAgendaFor(week, doc) {
+  const key = weekKey(week);
+  const payload = { bestie: state.user.id, week, weekly: doc.weekly, days: doc.days };
   state.agenda[key] = payload;
   render();
   await store.setItem('agenda', key, payload);
+}
+function saveAgenda(doc) { return saveAgendaFor(state.agendaWeek, doc); }
+
+const byTime = (a, b) => (a.time || '99:99').localeCompare(b.time || '99:99');
+
+/** Actividades de una fecha cualquiera. */
+function itemsOn(ds) {
+  return [...agendaDocFor(mondayOf(ds)).days[weekdayKey(parseDate(ds))]].sort(byTime);
+}
+/** Cambia la lista de actividades de una fecha con `fn(lista) => nuevaLista`. */
+async function updateItemsOn(ds, fn) {
+  const week = mondayOf(ds);
+  const doc = agendaDocFor(week);
+  const key = weekdayKey(parseDate(ds));
+  doc.days[key] = fn(doc.days[key]);
+  await saveAgendaFor(week, doc);
 }
 
 // ---------- Actividades del horario ----------
@@ -1630,36 +1650,37 @@ function itemTitle(item) {
   return [a.label, item.sub].filter(Boolean).join(' · ');
 }
 
-function agendaItem(item, list, day = '') {
+/**
+ * Una actividad en lista. `where` es { weekly: true } para los pendientes de la semana
+ * o { date } para una actividad de un día.
+ */
+function agendaItem(item, where) {
   const range = item.time ? `${fmtTime(item.time)}${item.end ? ` – ${fmtTime(item.end)}` : ''}` : '';
   const dur = minutesBetween(item.time, item.end);
-  const title = itemTitle(item);
-  const note = item.cat && item.text ? item.text : '';
+  const title = item.important && item.text ? item.text : itemTitle(item);
+  const note = item.important ? (item.text ? itemTitle(item) : '') : (item.cat && item.text ? item.text : '');
+  const t = item.important ? (EVENT_TYPES[item.type] || EVENT_TYPES.otro) : null;
+  const ref = where.weekly ? 'data-list="weekly"' : `data-date="${where.date}"`;
   return `<li class="group flex items-center gap-2.5 py-2">
-    <button data-action="agenda-toggle" data-list="${list}" data-day="${day}" data-id="${esc(item.id)}" aria-label="${item.done ? 'Marcar pendiente' : 'Marcar hecho'}"
+    <button data-action="agenda-toggle" ${ref} data-id="${esc(item.id)}" aria-label="${item.done ? 'Marcar pendiente' : 'Marcar hecho'}"
       class="w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${item.done ? 'bg-blush-400 border-blush-400 text-white' : 'border-blush-200 bg-paper hover:border-blush-300'}">
       ${item.done ? icon('check', 'w-3 h-3') : ''}</button>
     ${range ? `<span class="text-[11px] font-bold text-lavender-500 bg-lavender-50 px-2 py-0.5 rounded-full shrink-0">${range}</span>` : ''}
     <span class="flex-1 min-w-0 ${item.done ? 'line-through text-stone-400' : ''}">
-      <span class="block text-sm ${item.done ? '' : 'text-ink font-semibold'} break-words">${esc(title)}</span>
+      <span class="flex items-center gap-1.5 text-sm ${item.done ? '' : 'text-ink font-semibold'} break-words">
+        ${t ? `<span class="inline-flex items-center justify-center w-5 h-5 rounded-full border ${t.chip} shrink-0" title="${t.label}">${icon(t.icon, 'w-3 h-3')}</span>` : ''}${esc(title)}</span>
       ${note || dur ? `<span class="block text-[11px] text-stone-400 font-medium">${[dur ? fmtHours(dur) : '', esc(note)].filter(Boolean).join(' · ')}</span>` : ''}
     </span>
-    <button data-action="agenda-delete" data-list="${list}" data-day="${day}" data-id="${esc(item.id)}" aria-label="Borrar"
+    <button data-action="agenda-delete" ${ref} data-id="${esc(item.id)}" aria-label="Borrar"
       class="text-stone-300 hover:text-blush-500 shrink-0">${icon('x', 'w-3.5 h-3.5')}</button>
   </li>`;
 }
 
-// ---------- Fechas importantes (privadas) ----------
+// ---------- Fechas importantes ----------
+// Son actividades marcadas como "importante" (y las fechas viejas que se guardaron aparte).
 
 function eventsKey() { return `${state.user.id}_eventos`; }
 function myEvents() { return [...(state.agenda[eventsKey()]?.events || [])]; }
-
-/** Eventos de un día; los cumpleaños se repiten cada año. */
-function eventsOn(ds) {
-  return myEvents()
-    .filter(e => e.date === ds || (e.type === 'cumple' && e.date.slice(5) === ds.slice(5) && e.date <= ds))
-    .sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
-}
 
 async function saveEvents(events) {
   const key = eventsKey();
@@ -1667,6 +1688,31 @@ async function saveEvents(events) {
   state.agenda[key] = payload;
   render();
   await store.setItem('agenda', key, payload);
+}
+
+/** Todas las fechas importantes: actividades marcadas + fechas guardadas antes aparte. */
+function importantEntries() {
+  const out = myEvents().map(e => ({ ...e, source: 'legacy' }));
+  Object.values(state.agenda).forEach(doc => {
+    if (doc.bestie !== state.user.id || !doc.week || !doc.days) return;
+    DAYS.forEach((d, i) => {
+      (doc.days[d.key] || []).forEach(it => {
+        if (!it.important) return;
+        out.push({
+          id: it.id, source: 'item', date: addDays(doc.week, i), time: it.time || '',
+          type: it.type || 'otro', title: it.text || itemTitle(it),
+        });
+      });
+    });
+  });
+  return out;
+}
+
+/** Fechas importantes de un día; los cumpleaños se repiten cada año. */
+function eventsOn(ds) {
+  return importantEntries()
+    .filter(e => e.date === ds || (e.type === 'cumple' && e.date.slice(5) === ds.slice(5) && e.date <= ds))
+    .sort(byTime);
 }
 
 function upcomingEvents(days = 60) {
@@ -1685,6 +1731,8 @@ function eventChip(e, small = false) {
     ${icon(t.icon, small ? 'w-3 h-3 shrink-0' : 'w-3.5 h-3.5 shrink-0')}<span class="truncate">${e.time ? `${fmtTime(e.time)} · ` : ''}${esc(e.title)}</span></span>`;
 }
 
+// ---------- Calendario (vista principal del horario) ----------
+
 function viewHorarioCalendar() {
   const cur = state.horarioMonth;
   const y = cur.getFullYear(), mo = cur.getMonth();
@@ -1696,9 +1744,13 @@ function viewHorarioCalendar() {
   for (let d = 1; d <= daysIn; d++) {
     const ds = `${y}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const evs = eventsOn(ds);
-    cells += `<button data-action="event-day" data-date="${ds}"
-      class="min-h-16 sm:min-h-20 rounded-2xl border p-1 sm:p-1.5 flex flex-col items-stretch gap-1 text-left transition-colors ${evs.length ? 'bg-paper border-blush-200' : 'bg-cream border-[#E8DFD5]'} hover:border-blush-300 ${ds === today ? 'ring-2 ring-blush-300 ring-offset-1 ring-offset-paper' : ''}">
-      <span class="text-xs font-bold text-ink px-0.5">${d}</span>
+    const routine = itemsOn(ds).filter(it => !it.important).length;
+    cells += `<button data-action="day-open" data-date="${ds}" aria-label="${fmtDate(ds, { day: 'numeric', month: 'long' })}: ${routine} actividades, ${evs.length} importantes"
+      class="min-h-16 sm:min-h-20 rounded-2xl border p-1 sm:p-1.5 flex flex-col items-stretch gap-1 text-left transition-colors ${evs.length || routine ? 'bg-paper border-blush-200' : 'bg-cream border-[#E8DFD5]'} hover:border-blush-300 ${ds === today ? 'ring-2 ring-blush-300 ring-offset-1 ring-offset-paper' : ''}">
+      <span class="flex items-center justify-between px-0.5">
+        <span class="text-xs font-bold text-ink">${d}</span>
+        ${routine ? `<span class="text-[9px] font-bold text-lavender-500 bg-lavender-50 rounded-full px-1.5 leading-4">${routine}</span>` : ''}
+      </span>
       <span class="hidden sm:flex flex-col gap-0.5 min-w-0">${evs.slice(0, 2).map(e => eventChip(e, true)).join('')}${evs.length > 2 ? `<span class="text-[10px] font-bold text-stone-400 px-1">+${evs.length - 2}</span>` : ''}</span>
       <span class="flex sm:hidden flex-wrap gap-0.5 px-0.5">${evs.map(e => `<span class="w-1.5 h-1.5 rounded-full ${(EVENT_TYPES[e.type] || EVENT_TYPES.otro).dot}"></span>`).join('')}</span>
     </button>`;
@@ -1712,62 +1764,61 @@ function viewHorarioCalendar() {
       <h3 class="font-display font-bold text-xl text-ink">${cap(cur.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' }))}</h3>
       <button data-action="horario-month" data-value="1" aria-label="Mes siguiente" class="p-2.5 rounded-2xl bg-cream hover:bg-blush-50 border border-[#E5DDD3]">${icon('chevron-right')}</button>
     </div>
-    <div class="flex flex-wrap justify-center gap-1.5 mb-4">${Object.values(EVENT_TYPES).map(t => `<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border ${t.chip}">${icon(t.icon, 'w-3 h-3')}${t.label}</span>`).join('')}</div>
+    <div class="flex flex-wrap justify-center gap-1.5 mb-4">
+      ${Object.values(EVENT_TYPES).map(t => `<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border ${t.chip}">${icon(t.icon, 'w-3 h-3')}${t.label}</span>`).join('')}
+      <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border bg-lavender-50 text-lavender-500 border-lavender-200"><span class="font-bold">3</span> actividades</span>
+    </div>
     <div class="grid grid-cols-7 text-center text-[11px] font-bold text-stone-400 mb-2">${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(d => `<div>${d}</div>`).join('')}</div>
     <div class="grid grid-cols-7 gap-1 sm:gap-1.5">${cells}</div>
-    <p class="text-center text-[11px] text-stone-400 mt-3">Toca un día para agregar una fecha importante. Los cumpleaños se repiten cada año.</p>
+    <p class="text-center text-[11px] text-stone-400 mt-3">Toca un día para ver, agregar o editar lo que harás. Los cumpleaños se repiten cada año.</p>
   `, 'shadow-cute')}
 
   ${card(`
-    <h3 class="font-display font-bold text-lg text-ink mb-3">Próximas fechas</h3>
+    <h3 class="font-display font-bold text-lg text-ink">Próximas fechas importantes</h3>
+    <p class="text-xs text-stone-500 mb-3">Solo aparece lo que marcas como importante.</p>
     ${upcoming.length ? `<ul class="divide-y divide-[#F0E8DF]">${[...new Set(upcoming.map(e => e.on))].map(on => {
       const evs = upcoming.filter(e => e.on === on);
       const left = daysBetween(todayStr(), on);
       const when = left === 0 ? 'Hoy' : left === 1 ? 'Mañana' : `En ${left} días`;
       return `
-      <li class="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-        <div class="w-12 text-center shrink-0 pt-0.5">
-          <div class="font-display font-bold text-2xl text-ink leading-none">${parseDate(on).getDate()}</div>
-          <div class="text-[10px] font-bold text-stone-400 uppercase mt-0.5">${fmtDate(on, { month: 'short' })}</div>
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="text-xs font-bold text-stone-500 mb-1.5">${cap(fmtDate(on, { weekday: 'long' }))} · ${when}</p>
-          <div class="flex flex-wrap gap-1.5">${evs.map(e => eventChip(e)).join('')}</div>
-        </div>
+      <li>
+        <button data-action="day-open" data-date="${on}" class="w-full text-left flex items-start gap-3 py-3 hover:bg-cream/60 rounded-xl">
+          <div class="w-12 text-center shrink-0 pt-0.5">
+            <div class="font-display font-bold text-2xl text-ink leading-none">${parseDate(on).getDate()}</div>
+            <div class="text-[10px] font-bold text-stone-400 uppercase mt-0.5">${fmtDate(on, { month: 'short' })}</div>
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="text-xs font-bold text-stone-500 mb-1.5">${cap(fmtDate(on, { weekday: 'long' }))} · ${when}</p>
+            <div class="flex flex-wrap gap-1.5">${evs.map(e => eventChip(e)).join('')}</div>
+          </div>
+        </button>
       </li>`;
     }).join('')}</ul>`
-    : `<p class="text-sm text-stone-400 text-center py-3">Sin fechas en los próximos 2 meses.</p>`}
+    : `<p class="text-sm text-stone-400 text-center py-3">Nada importante en los próximos 2 meses.</p>`}
   `)}`;
 }
 
-function openEventDay(ds) {
-  const evs = eventsOn(ds);
+/** Un día: todo lo que harás + fechas importantes, con opción de agregar. */
+function openDay(ds) {
+  const items = itemsOn(ds);
+  // Fechas que no son actividades de este mismo día: viejas o cumpleaños de otro año
+  const extra = eventsOn(ds).filter(e => !(e.source === 'item' && e.date === ds));
   openModal(`
-    <div class="flex items-center justify-between mb-4">
-      <h3 class="font-display font-bold text-xl text-ink">${cap(fmtDate(ds, { weekday: 'long', day: 'numeric', month: 'long' }))}</h3>
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h3 class="font-display font-bold text-xl text-ink">${cap(fmtDate(ds, { weekday: 'long', day: 'numeric', month: 'long' }))}</h3>
+        ${ds === todayStr() ? '<p class="text-xs font-bold text-blush-500">Hoy</p>' : ''}
+      </div>
       <button data-action="close-modal" aria-label="Cerrar" class="text-stone-400 hover:text-ink">${icon('x', 'w-5 h-5')}</button>
     </div>
-    ${evs.length ? `<ul class="space-y-2 mb-4">${evs.map(e => `
-      <li class="flex items-center justify-between gap-2">
-        <div class="min-w-0">${eventChip(e)}${e.type === 'cumple' && e.date !== ds ? `<span class="text-[11px] text-stone-400 ml-1">(cada año)</span>` : ''}</div>
-        <button data-action="event-delete" data-id="${esc(e.id)}" data-date="${ds}" aria-label="Borrar" class="text-stone-300 hover:text-blush-500 shrink-0">${icon('trash-2', 'w-4 h-4')}</button>
-      </li>`).join('')}</ul>` : `<p class="text-sm text-stone-400 mb-4">Nada anotado este día.</p>`}
-    <form data-submit="event-add" data-date="${ds}" class="space-y-3 bg-cream border border-[#E8DFD5] rounded-2xl p-3.5">
-      <p class="text-xs font-bold text-stone-600">Agregar fecha importante</p>
-      <input name="title" required maxlength="80" placeholder="Ej. Cumple de Sofi, cena con amigas…" class="${inputCls} bg-paper">
-      <div class="grid grid-cols-4 gap-1.5">
-        ${Object.entries(EVENT_TYPES).map(([k, t], i) => `
-        <label class="cursor-pointer">
-          <input type="radio" name="type" value="${k}" ${i === 0 ? 'checked' : ''} class="peer sr-only">
-          <span class="flex flex-col items-center gap-1 py-2 rounded-xl border text-[10px] font-bold bg-paper border-[#E5DDD3] text-stone-500 ${t.picked}">${icon(t.icon)}${t.label}</span>
-        </label>`).join('')}
-      </div>
-      <div class="grid grid-cols-[3.5rem_1fr] items-center gap-2">
-        <span class="text-xs font-bold text-stone-600">Hora <span class="font-medium text-stone-400">(opc.)</span></span>
-        ${timePicker('time', { label: 'Hora (opcional)' })}
-      </div>
-      <button type="submit" class="w-full ${btnPrimary} py-2.5">Guardar</button>
-    </form>
+    ${extra.length ? `<div class="space-y-1.5 mb-3">${extra.map(e => `
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">${eventChip(e)}${e.type === 'cumple' && e.date !== ds ? '<span class="text-[11px] text-stone-400 ml-1">(cada año)</span>' : ''}</div>
+        ${e.source === 'legacy' ? `<button data-action="event-delete" data-id="${esc(e.id)}" data-date="${ds}" aria-label="Borrar" class="text-stone-300 hover:text-blush-500 shrink-0">${icon('trash-2', 'w-4 h-4')}</button>` : ''}
+      </div>`).join('')}</div>` : ''}
+    ${items.length ? `<ul class="divide-y divide-[#F0E8DF] mb-3">${items.map(it => agendaItem(it, { date: ds })).join('')}</ul>`
+    : (extra.length ? '' : '<p class="text-sm text-stone-400 mb-3">Nada anotado este día.</p>')}
+    <button data-action="activity-new" data-date="${ds}" class="w-full ${btnPrimary} inline-flex items-center justify-center gap-1.5">${icon('plus')} Agregar</button>
   `);
 }
 
@@ -1778,19 +1829,17 @@ function viewHorario() {
         ${eyebrow(`${icon('lock', 'w-3 h-3 inline -mt-0.5')} Solo tú lo ves`, 'text-lavender-500 bg-lavender-50 border-lavender-200')}
         <h2 class="font-display font-bold text-2xl text-ink mt-1.5">Mi horario</h2>
       </div>
-      ${segmented([{ value: 'semana', label: 'Semana' }, { value: 'tiempo', label: 'Mi tiempo' }, { value: 'calendario', label: 'Fechas' }], state.horarioView, 'horario-view')}
+      ${segmented([{ value: 'calendario', label: 'Calendario' }, { value: 'semana', label: 'Semana' }, { value: 'tiempo', label: 'Mi tiempo' }], state.horarioView, 'horario-view')}
     </div>
   `);
-  if (state.horarioView === 'calendario') return segment + viewHorarioCalendar();
+  if (state.horarioView === 'semana') return segment + viewHorarioWeek();
   if (state.horarioView === 'tiempo') return segment + viewTiempo();
-  return segment + viewHorarioWeek();
+  return segment + viewHorarioCalendar();
 }
 
-// ---------- Nueva actividad (modal) ----------
+// ---------- Agregar (modal) ----------
 
-function openActivity(dayKey) {
-  const d = DAYS.find(x => x.key === dayKey);
-  const ds = addDays(state.agendaWeek, DAYS.indexOf(d));
+function openActivity(ds) {
   const opts = myOptions();
   const chip = 'flex items-center justify-center text-center px-2 py-2 rounded-xl border text-xs font-bold bg-paper border-[#E5DDD3] text-stone-600 peer-checked:bg-blush-100 peer-checked:border-blush-300 peer-checked:text-blush-500 transition-colors';
   const subChip = 'inline-flex px-3 py-1.5 rounded-full border text-xs font-bold bg-paper border-[#E5DDD3] text-stone-600 peer-checked:bg-lavender-100 peer-checked:border-lavender-300 peer-checked:text-lavender-500';
@@ -1805,27 +1854,41 @@ function openActivity(dayKey) {
     </div>`;
 
   openModal(`
-    <form data-submit="activity-add" data-day="${dayKey}" class="space-y-4">
+    <form data-submit="activity-add" data-date="${ds}" class="space-y-4">
       <div class="flex items-center justify-between">
         <div>
           <h3 class="font-display font-bold text-xl text-ink">¿Qué harás?</h3>
           <p class="text-xs font-semibold text-stone-500">${cap(fmtDate(ds, { weekday: 'long', day: 'numeric', month: 'long' }))}</p>
         </div>
-        <button type="button" data-action="close-modal" aria-label="Cerrar" class="text-stone-400 hover:text-ink">${icon('x', 'w-5 h-5')}</button>
+        <button type="button" data-action="day-open" data-date="${ds}" aria-label="Volver al día" class="text-stone-400 hover:text-ink">${icon('x', 'w-5 h-5')}</button>
       </div>
       <div class="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Actividad">
         ${ACTIVITIES.map(a => `<label class="cursor-pointer"><input type="radio" name="cat" value="${a.key}" required class="peer sr-only"><span class="${chip} min-h-11">${a.label}</span></label>`).join('')}
       </div>
       ${subBlock('work', '¿En qué trabajarás?', opts.work, 'Otro trabajo…')}
       ${subBlock('study', '¿Qué estudiarás?', opts.study, opts.study.length ? 'Otra materia…' : 'Ej. Inglés, Cálculo…')}
+      <input name="note" maxlength="80" placeholder="Nombre o nota (ej. Examen de Lenguajes)" class="${inputCls}">
       <div class="space-y-2">
         <div class="grid grid-cols-[2rem_1fr] items-center gap-2"><span class="text-xs font-bold text-stone-600">De</span>
-          ${timePicker('time', { required: true, label: 'Hora de inicio' })}</div>
+          ${timePicker('time', { label: 'Hora de inicio' })}</div>
         <div class="grid grid-cols-[2rem_1fr] items-center gap-2"><span class="text-xs font-bold text-stone-600">A</span>
-          ${timePicker('end', { required: true, label: 'Hora de fin' })}</div>
+          ${timePicker('end', { label: 'Hora de fin' })}</div>
+        <p class="text-[11px] text-stone-400">Con hora de inicio y fin, cuenta en "Mi tiempo".</p>
       </div>
-      <input name="note" maxlength="80" placeholder="Nota (opcional)" class="${inputCls}">
-      <button type="submit" class="w-full ${btnPrimary}">Agregar</button>
+      <div class="bg-cream border border-[#E8DFD5] rounded-2xl p-3 space-y-2.5">
+        <label class="flex items-center justify-between gap-3 cursor-pointer">
+          <span><span class="block text-sm font-bold text-ink">Es importante</span><span class="block text-[11px] text-stone-500">Aparece en "Próximas fechas importantes"</span></span>
+          <input type="checkbox" name="important" class="w-5 h-5 accent-blush-400">
+        </label>
+        <div data-important-types class="hidden"><div class="grid grid-cols-4 gap-1.5">
+          ${Object.entries(EVENT_TYPES).map(([k, t], i) => `
+          <label class="cursor-pointer">
+            <input type="radio" name="type" value="${k}" ${i === 0 ? 'checked' : ''} class="peer sr-only">
+            <span class="flex flex-col items-center gap-1 py-2 rounded-xl border text-[10px] font-bold bg-paper border-[#E5DDD3] text-stone-500 ${t.picked}">${icon(t.icon)}${t.label}</span>
+          </label>`).join('')}
+        </div></div>
+      </div>
+      <button type="submit" class="w-full ${btnPrimary}">Guardar</button>
     </form>`);
 }
 
@@ -1945,7 +2008,7 @@ function viewHorarioWeek() {
       <h3 class="font-display font-bold text-lg text-ink">Pendientes de la semana</h3>
       <span class="text-xs font-bold text-stone-400">${pendingWeek} por hacer</span>
     </div>
-    <ul class="divide-y divide-[#F0E8DF]">${doc.weekly.map(i => agendaItem(i, 'weekly')).join('') || '<li class="py-2 text-sm text-stone-400">Nada pendiente todavía.</li>'}</ul>
+    <ul class="divide-y divide-[#F0E8DF]">${doc.weekly.map(i => agendaItem(i, { weekly: true })).join('') || '<li class="py-2 text-sm text-stone-400">Nada pendiente todavía.</li>'}</ul>
     <form data-submit="agenda-add" data-list="weekly" class="flex gap-2 mt-3">
       <input name="text" maxlength="140" required placeholder="Agregar pendiente…" aria-label="Nuevo pendiente" class="flex-1 min-w-0 ${field}">
       <button type="submit" aria-label="Agregar" class="w-10 h-10 rounded-xl bg-blush-400 hover:bg-blush-500 text-white flex items-center justify-center shrink-0">${icon('plus')}</button>
@@ -1966,9 +2029,9 @@ function viewHorarioWeek() {
           </div>
           ${isToday ? `<span class="text-[10px] font-bold bg-blush-400 text-white px-2 py-0.5 rounded-full">Hoy</span>` : ''}
         </div>
-        ${eventsOn(ds).length ? `<div class="flex flex-wrap gap-1 mt-2">${eventsOn(ds).map(e => eventChip(e, true)).join('')}</div>` : ''}
-        <ul class="divide-y divide-[#F0E8DF] mt-1">${items.map(it => agendaItem(it, 'day', d.key)).join('')}</ul>
-        <button data-action="activity-new" data-day="${d.key}"
+        ${eventsOn(ds).filter(e => !(e.source === 'item' && e.date === ds)).map(e => eventChip(e, true)).join('') ? `<div class="flex flex-wrap gap-1 mt-2">${eventsOn(ds).filter(e => !(e.source === 'item' && e.date === ds)).map(e => eventChip(e, true)).join('')}</div>` : ''}
+        <ul class="divide-y divide-[#F0E8DF] mt-1">${items.map(it => agendaItem(it, { date: ds })).join('')}</ul>
+        <button data-action="activity-new" data-date="${ds}"
           class="w-full mt-2 inline-flex items-center justify-center gap-1.5 text-xs font-bold text-blush-500 bg-paper border border-dashed border-blush-200 hover:bg-blush-50 rounded-xl py-2.5">
           ${icon('plus', 'w-3.5 h-3.5')} ¿Qué harás?</button>
       </article>`;
@@ -2143,12 +2206,12 @@ const ACTIONS = {
     state.horarioMonth = new Date(d.getFullYear(), d.getMonth() + Number(el.dataset.value), 1);
     render();
   },
-  'event-day'(el) { openEventDay(el.dataset.date); },
+  'day-open'(el) { openDay(el.dataset.date); },
   async 'event-delete'(el) {
     const ev = myEvents().find(e => e.id === el.dataset.id);
     if (!ev || !confirm(`¿Borrar "${ev.title}"?`)) return;
     await saveEvents(myEvents().filter(e => e.id !== el.dataset.id));
-    openEventDay(el.dataset.date);
+    openDay(el.dataset.date);
   },
 
   // Mover / cambiar la rutina de hoy (solo para quien inició sesión)
@@ -2205,7 +2268,7 @@ const ACTIONS = {
   'agenda-today'() { state.agendaWeek = mondayOf(todayStr()); render(); },
 
   // Horario: actividades y tiempo
-  'activity-new'(el) { openActivity(el.dataset.day); },
+  'activity-new'(el) { openActivity(el.dataset.date); },
   'tiempo-period'(el) { state.tiempoPeriod = el.dataset.value; render(); },
   'tiempo-move'(el) {
     const n = Number(el.dataset.value);
@@ -2220,20 +2283,29 @@ const ACTIONS = {
 
   // Horario
   'agenda-week'(el) { state.agendaWeek = addDays(state.agendaWeek, Number(el.dataset.value)); render(); },
-  'agenda-toggle'(el) {
-    const doc = agendaDoc();
-    const list = el.dataset.list === 'weekly' ? doc.weekly : doc.days[el.dataset.day];
-    const item = list.find(i => i.id === el.dataset.id);
-    if (!item) return;
-    const idx = list.indexOf(item);
-    list[idx] = { ...item, done: !item.done };
-    saveAgenda(doc);
+  async 'agenda-toggle'(el) {
+    const { id, date, list } = el.dataset;
+    const inModal = Boolean(el.closest('#modal-box'));
+    if (list === 'weekly') {
+      const doc = agendaDoc();
+      doc.weekly = doc.weekly.map(i => i.id === id ? { ...i, done: !i.done } : i);
+      await saveAgenda(doc);
+    } else {
+      await updateItemsOn(date, items => items.map(i => i.id === id ? { ...i, done: !i.done } : i));
+      if (inModal) openDay(date);
+    }
   },
-  'agenda-delete'(el) {
-    const doc = agendaDoc();
-    if (el.dataset.list === 'weekly') doc.weekly = doc.weekly.filter(i => i.id !== el.dataset.id);
-    else doc.days[el.dataset.day] = doc.days[el.dataset.day].filter(i => i.id !== el.dataset.id);
-    saveAgenda(doc);
+  async 'agenda-delete'(el) {
+    const { id, date, list } = el.dataset;
+    const inModal = Boolean(el.closest('#modal-box'));
+    if (list === 'weekly') {
+      const doc = agendaDoc();
+      doc.weekly = doc.weekly.filter(i => i.id !== id);
+      await saveAgenda(doc);
+    } else {
+      await updateItemsOn(date, items => items.filter(i => i.id !== id));
+      if (inModal) openDay(date);
+    }
   },
 };
 
@@ -2290,21 +2362,9 @@ const SUBMITS = {
     render();
     showToast('Medidas guardadas');
   },
-  async 'event-add'(form) {
-    const title = form.elements.title.value.trim();
-    if (!title) return;
-    const ds = form.dataset.date;
-    const ev = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      date: ds, title, type: form.querySelector('input[name="type"]:checked')?.value || 'otro', time: readTime(form, 'time'),
-    };
-    await saveEvents([...myEvents(), ev]);
-    openEventDay(ds);
-    showToast('Fecha guardada');
-  },
   async 'activity-add'(form) {
     const cat = form.querySelector('input[name="cat"]:checked')?.value;
-    if (!cat) return showToast('Elige una actividad');
+    if (!cat) return showToast('Elige qué harás');
     const a = activityOf(cat);
     let sub = '';
     const opts = myOptions();
@@ -2318,15 +2378,17 @@ const SUBMITS = {
       }
     }
     const start = readTime(form, 'time'), end = readTime(form, 'end');
-    if (!start || !end) return showToast('Pon la hora de inicio y de fin');
-    const doc = agendaDoc();
-    doc.days[form.dataset.day].push({
+    if (end && !start) return showToast('Pon también la hora de inicio');
+    const important = form.elements.important.checked;
+    const item = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       cat, sub, time: start, end, text: form.elements.note.value.trim(), done: false,
-    });
-    closeModal();
-    await saveAgenda(doc);
-    showToast(`${itemTitle({ cat, sub })} agregado`);
+    };
+    if (important) { item.important = true; item.type = form.querySelector('input[name="type"]:checked')?.value || 'otro'; }
+    const ds = form.dataset.date;
+    await updateItemsOn(ds, items => [...items, item]);
+    openDay(ds);
+    showToast(`${important && item.text ? item.text : itemTitle(item)} guardado`);
   },
   async 'agenda-add'(form) {
     const text = form.text.value.trim();
@@ -2355,6 +2417,10 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('change', (e) => {
   // En "¿Qué harás?": mostrar la elección de trabajo/estudio solo cuando aplica
+  if (e.target.name === 'important') {
+    document.querySelector('#modal-box [data-important-types]')?.classList.toggle('hidden', !e.target.checked);
+    return;
+  }
   if (e.target.name === 'cat') {
     const sub = activityOf(e.target.value)?.sub;
     document.querySelectorAll('#modal-box [data-sub-for]').forEach(b => b.classList.toggle('hidden', b.dataset.subFor !== sub));

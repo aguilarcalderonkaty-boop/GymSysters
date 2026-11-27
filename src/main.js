@@ -103,6 +103,9 @@ const state = {
   agenda: {},            // { "<usuaria>_<lunes de la semana>": { weekly: [], days: { lunes: [] ... } } }
   agendaWeek: mondayOf(todayStr()),
   horarioView: 'semana',
+  tiempoPeriod: 'semana',
+  tiempoMonth: firstOfMonth(new Date()),
+  plans: {},             // rutina cambiada por día: { "<fecha>_<usuaria>": { day: 'lunes' } }
   horarioMonth: firstOfMonth(new Date()),
   rutinasView: 'plan',
   galleryGroup: 'Todos',
@@ -206,8 +209,31 @@ function normalizeRoutines(r) {
   return out;
 }
 
-function routineForDate(dateStr) {
-  return state.routines[weekdayKey(parseDate(dateStr))] || { title: '', exercises: [] };
+const REST_ROUTINE = { title: 'Descanso', exercises: [] };
+
+/** Qué rutina hace una usuaria en una fecha: la del día, o la que eligió si la movió. */
+function plannedDayKey(dateStr, uid = state.user?.id) {
+  return state.plans[`${dateStr}_${uid}`]?.day || weekdayKey(parseDate(dateStr));
+}
+function isMoved(dateStr, uid = state.user?.id) {
+  return Boolean(state.plans[`${dateStr}_${uid}`]);
+}
+function routineForDate(dateStr, uid = state.user?.id) {
+  const key = plannedDayKey(dateStr, uid);
+  if (key === 'descanso') return REST_ROUTINE;
+  return state.routines[key] || { title: '', exercises: [] };
+}
+
+async function setPlan(dateStr, dayKey) {
+  const uid = state.user.id;
+  const id = `${dateStr}_${uid}`;
+  if (!dayKey || dayKey === weekdayKey(parseDate(dateStr))) {
+    delete state.plans[id];
+    await store.removeItem('plans', id);
+  } else {
+    state.plans[id] = { bestie: uid, date: dateStr, day: dayKey };
+    await store.setItem('plans', id, state.plans[id]);
+  }
 }
 
 function logsOn(dateStr, uid) {
@@ -219,7 +245,7 @@ function logFor(dateStr, uid, exName) {
 }
 
 function routineProgress(dateStr, uid) {
-  const exs = routineForDate(dateStr).exercises;
+  const exs = routineForDate(dateStr, uid).exercises;
   const done = exs.filter(e => logFor(dateStr, uid, e.name)).length;
   return { done, total: exs.length };
 }
@@ -544,6 +570,7 @@ function restDaySummary() {
   const tomorrow = addDays(todayStr(), 1);
   const next = routineForDate(tomorrow);
   const nextDay = DAYS.find(d => d.key === weekdayKey(parseDate(tomorrow)));
+  const moveBack = isMoved(todayStr()) ? `<button data-action="plan-reset" class="${btnGhost} mt-3">Volver a la rutina del día</button>` : '';
 
   const stat = (label, value, cls) => `<div class="rounded-2xl p-3 text-center ${cls}"><div class="font-display font-bold text-2xl text-ink">${value}</div><div class="text-[11px] font-bold text-stone-500">${label}</div></div>`;
   let message = 'Semana tranquila. La próxima vamos con todo.';
@@ -563,16 +590,24 @@ function restDaySummary() {
       ${stat('Comida sana', healthyAvg !== null ? `${healthyAvg}%` : '--', 'bg-sage-50 border border-sage-200')}
     </div>
     ${next.exercises.length ? `<p class="text-xs font-semibold text-stone-500 mt-4">Mañana (${nextDay.label}): <span class="text-ink">${esc(next.title)}</span> · ${next.exercises.length} ejercicios</p>` : ''}
+    <div class="flex flex-wrap gap-2">
+      ${moveBack}
+      <button data-action="plan-choose" class="${btnGhost} mt-3">Hacer otra rutina hoy</button>
+    </div>
   `);
 }
 
 function viewInicio() {
   const u = state.user;
   const today = todayStr();
-  const dk = weekdayKey();
-  const day = DAYS.find(d => d.key === dk);
-  const routine = state.routines[dk];
+  const day = DAYS.find(d => d.key === weekdayKey());
+  const planned = plannedDayKey(today);
+  const moved = isMoved(today);
+  const routine = routineForDate(today);
   const { done, total } = routineProgress(today, u.id);
+  const plannedLabel = planned === 'descanso' ? 'descanso' : `rutina del ${DAYS.find(d => d.key === planned).label}`;
+  const tomorrowLabel = DAYS.find(d => d.key === weekdayKey(parseDate(addDays(today, 1)))).label;
+  const started = logsOn(today, u.id).length > 0;
   const complete = completedOn(today, u.id);
   const pct = total ? Math.round((done / total) * 100) : 0;
 
@@ -592,9 +627,14 @@ function viewInicio() {
   <section class="journal-accent rounded-3xl p-5 sm:p-6 shadow-cute">
     <div class="flex items-start justify-between gap-4">
       <div>
-        ${eyebrow(`Hoy · ${day.label}`, 'text-blush-500 bg-paper border-blush-200')}
+        ${eyebrow(`Hoy · ${day.label}${moved ? ` · ${plannedLabel}` : ''}`, 'text-blush-500 bg-paper border-blush-200')}
         <h2 class="font-display font-bold text-2xl sm:text-3xl text-ink mt-2">${esc(routine.title) || 'Rutina de hoy'}</h2>
         ${hero}
+        ${total > 0 && !complete && !started ? `
+        <div class="flex flex-wrap gap-2 mt-3">
+          <button data-action="plan-tomorrow" class="${btnGhost}">Hoy no puedo · pasarla al ${tomorrowLabel.toLowerCase()}</button>
+          <button data-action="plan-choose" class="${btnGhost}">Cambiar rutina</button>
+        </div>` : ''}
       </div>
       ${total > 0 ? `
       <div class="shrink-0 text-center">
@@ -1034,7 +1074,7 @@ function streakFor(uid) {
   let streak = 0;
   for (let i = 0; i < 365; i++, ds = addDays(ds, -1)) {
     if (completedOn(ds, uid)) streak++;
-    else if (routineForDate(ds).exercises.length === 0) continue; // día de descanso: no rompe
+    else if (routineForDate(ds, uid).exercises.length === 0) continue; // día de descanso: no rompe
     else break;
   }
   return streak;
@@ -1492,13 +1532,75 @@ async function saveAgenda(doc) {
   await store.setItem('agenda', key, payload);
 }
 
+// ---------- Actividades del horario ----------
+
+const ACTIVITIES = [
+  { key: 'gym', label: 'Gym' },
+  { key: 'trabajo', label: 'Trabajar', sub: 'work' },
+  { key: 'estudio', label: 'Estudiar', sub: 'study' },
+  { key: 'universidad', label: 'Universidad' },
+  { key: 'amigos', label: 'Tiempo con amigos' },
+  { key: 'familia', label: 'Familia' },
+  { key: 'caminar', label: 'Caminar' },
+  { key: 'bano', label: 'Baño' },
+  { key: 'arreglarse', label: 'Arreglarse' },
+  { key: 'stream', label: 'Stream' },
+  { key: 'videojuegos', label: 'Jugar videojuegos' },
+  { key: 'libre', label: 'Tiempo libre' },
+  { key: 'otro', label: 'Otro' },
+];
+const activityOf = key => ACTIVITIES.find(a => a.key === key) || null;
+const DEFAULT_OPTIONS = { work: ['RentaClara', 'Tornofit'], study: [] };
+
+function optionsKey() { return `${state.user.id}_opciones`; }
+function myOptions() {
+  const saved = state.agenda[optionsKey()];
+  return {
+    work: saved?.work || [...DEFAULT_OPTIONS.work],
+    study: saved?.study || [...DEFAULT_OPTIONS.study],
+  };
+}
+async function saveOptions(opts) {
+  const key = optionsKey();
+  const payload = { bestie: state.user.id, kind: 'opciones', work: opts.work, study: opts.study };
+  state.agenda[key] = payload;
+  await store.setItem('agenda', key, payload);
+}
+
+/** Minutos entre dos horas "HH:MM" (si termina después de medianoche, cruza el día). */
+function minutesBetween(start, end) {
+  if (!start || !end) return 0;
+  const [h1, m1] = start.split(':').map(Number);
+  const [h2, m2] = end.split(':').map(Number);
+  let diff = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (diff <= 0) diff += 24 * 60;
+  return diff;
+}
+function fmtHours(min) {
+  if (!min) return '0 h';
+  const h = Math.floor(min / 60), m = min % 60;
+  return h && m ? `${h} h ${m} min` : h ? `${h} h` : `${m} min`;
+}
+function itemTitle(item) {
+  const a = activityOf(item.cat);
+  if (!a) return item.text || '';
+  return [a.label, item.sub].filter(Boolean).join(' · ');
+}
+
 function agendaItem(item, list, day = '') {
+  const range = item.time ? `${esc(item.time)}${item.end ? `–${esc(item.end)}` : ''}` : '';
+  const dur = minutesBetween(item.time, item.end);
+  const title = itemTitle(item);
+  const note = item.cat && item.text ? item.text : '';
   return `<li class="group flex items-center gap-2.5 py-2">
     <button data-action="agenda-toggle" data-list="${list}" data-day="${day}" data-id="${esc(item.id)}" aria-label="${item.done ? 'Marcar pendiente' : 'Marcar hecho'}"
       class="w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors ${item.done ? 'bg-blush-400 border-blush-400 text-white' : 'border-blush-200 bg-paper hover:border-blush-300'}">
       ${item.done ? icon('check', 'w-3 h-3') : ''}</button>
-    ${item.time ? `<span class="text-[11px] font-bold text-lavender-500 bg-lavender-50 px-2 py-0.5 rounded-full shrink-0">${esc(item.time)}</span>` : ''}
-    <span class="flex-1 text-sm ${item.done ? 'line-through text-stone-400' : 'text-ink font-medium'} break-words min-w-0">${esc(item.text)}</span>
+    ${range ? `<span class="text-[11px] font-bold text-lavender-500 bg-lavender-50 px-2 py-0.5 rounded-full shrink-0">${range}</span>` : ''}
+    <span class="flex-1 min-w-0 ${item.done ? 'line-through text-stone-400' : ''}">
+      <span class="block text-sm ${item.done ? '' : 'text-ink font-semibold'} break-words">${esc(title)}</span>
+      ${note || dur ? `<span class="block text-[11px] text-stone-400 font-medium">${[dur ? fmtHours(dur) : '', esc(note)].filter(Boolean).join(' · ')}</span>` : ''}
+    </span>
     <button data-action="agenda-delete" data-list="${list}" data-day="${day}" data-id="${esc(item.id)}" aria-label="Borrar"
       class="text-stone-300 hover:text-blush-500 shrink-0">${icon('x', 'w-3.5 h-3.5')}</button>
   </li>`;
@@ -1625,11 +1727,138 @@ function viewHorario() {
         ${eyebrow(`${icon('lock', 'w-3 h-3 inline -mt-0.5')} Solo tú lo ves`, 'text-lavender-500 bg-lavender-50 border-lavender-200')}
         <h2 class="font-display font-bold text-2xl text-ink mt-1.5">Mi horario</h2>
       </div>
-      ${segmented([{ value: 'semana', label: 'Semana' }, { value: 'calendario', label: 'Fechas importantes' }], state.horarioView, 'horario-view')}
+      ${segmented([{ value: 'semana', label: 'Semana' }, { value: 'tiempo', label: 'Mi tiempo' }, { value: 'calendario', label: 'Fechas' }], state.horarioView, 'horario-view')}
     </div>
   `);
   if (state.horarioView === 'calendario') return segment + viewHorarioCalendar();
+  if (state.horarioView === 'tiempo') return segment + viewTiempo();
   return segment + viewHorarioWeek();
+}
+
+// ---------- Nueva actividad (modal) ----------
+
+function openActivity(dayKey) {
+  const d = DAYS.find(x => x.key === dayKey);
+  const ds = addDays(state.agendaWeek, DAYS.indexOf(d));
+  const opts = myOptions();
+  const chip = 'flex items-center justify-center text-center px-2 py-2 rounded-xl border text-xs font-bold bg-paper border-[#E5DDD3] text-stone-600 peer-checked:bg-blush-100 peer-checked:border-blush-300 peer-checked:text-blush-500 transition-colors';
+  const subChip = 'inline-flex px-3 py-1.5 rounded-full border text-xs font-bold bg-paper border-[#E5DDD3] text-stone-600 peer-checked:bg-lavender-100 peer-checked:border-lavender-300 peer-checked:text-lavender-500';
+  const subBlock = (kind, label, names, placeholder) => `
+    <div data-sub-for="${kind}" class="hidden bg-cream border border-[#E8DFD5] rounded-2xl p-3 space-y-2">
+      <p class="text-xs font-bold text-stone-600">${label}</p>
+      ${names.length ? `<div class="flex flex-wrap gap-1.5">${names.map((n, i) => `
+        <label class="cursor-pointer"><input type="radio" name="sub-${kind}" value="${esc(n)}" ${i === 0 ? 'checked' : ''} class="peer sr-only"><span class="${subChip}">${esc(n)}</span></label>`).join('')}
+      </div>` : ''}
+      <input name="new-${kind}" maxlength="40" placeholder="${placeholder}" class="w-full bg-paper border border-[#DFD5CA] focus:border-lavender-300 rounded-xl px-3 py-2 text-sm outline-none">
+      <p class="text-[11px] text-stone-400">Si escribes uno nuevo, se guarda como opción para la próxima.</p>
+    </div>`;
+
+  openModal(`
+    <form data-submit="activity-add" data-day="${dayKey}" class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="font-display font-bold text-xl text-ink">¿Qué harás?</h3>
+          <p class="text-xs font-semibold text-stone-500">${cap(fmtDate(ds, { weekday: 'long', day: 'numeric', month: 'long' }))}</p>
+        </div>
+        <button type="button" data-action="close-modal" aria-label="Cerrar" class="text-stone-400 hover:text-ink">${icon('x', 'w-5 h-5')}</button>
+      </div>
+      <div class="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Actividad">
+        ${ACTIVITIES.map(a => `<label class="cursor-pointer"><input type="radio" name="cat" value="${a.key}" required class="peer sr-only"><span class="${chip} min-h-11">${a.label}</span></label>`).join('')}
+      </div>
+      ${subBlock('work', '¿En qué trabajarás?', opts.work, 'Otro trabajo…')}
+      ${subBlock('study', '¿Qué estudiarás?', opts.study, opts.study.length ? 'Otra materia…' : 'Ej. Inglés, Cálculo…')}
+      <div class="grid grid-cols-2 gap-2">
+        <label class="block"><span class="block text-xs font-bold text-stone-600 mb-1">De</span>
+          <input name="time" type="time" required class="w-full bg-cream border border-[#DFD5CA] focus:border-blush-300 rounded-xl px-3 py-2.5 text-sm outline-none"></label>
+        <label class="block"><span class="block text-xs font-bold text-stone-600 mb-1">A</span>
+          <input name="end" type="time" required class="w-full bg-cream border border-[#DFD5CA] focus:border-blush-300 rounded-xl px-3 py-2.5 text-sm outline-none"></label>
+      </div>
+      <input name="note" maxlength="80" placeholder="Nota (opcional)" class="${inputCls}">
+      <button type="submit" class="w-full ${btnPrimary}">Agregar</button>
+    </form>`);
+}
+
+// ---------- Mi tiempo: en qué se va cada hora ----------
+
+/** Junta las actividades propias con hora de inicio y fin entre dos fechas (incluidas). */
+function timeByActivity(from, to) {
+  const totals = {};
+  let total = 0;
+  const days = new Set();
+  Object.values(state.agenda).forEach(doc => {
+    if (doc.bestie !== state.user.id || !doc.week || !doc.days) return;
+    DAYS.forEach((d, i) => {
+      const ds = addDays(doc.week, i);
+      if (ds < from || ds > to) return;
+      (doc.days[d.key] || []).forEach(it => {
+        const min = minutesBetween(it.time, it.end);
+        if (!min) return;
+        const cat = it.cat && activityOf(it.cat) ? it.cat : 'otro';
+        totals[cat] = totals[cat] || { min: 0, subs: {} };
+        totals[cat].min += min;
+        if (it.sub) totals[cat].subs[it.sub] = (totals[cat].subs[it.sub] || 0) + min;
+        total += min;
+        days.add(ds);
+      });
+    });
+  });
+  return { totals, total, days: days.size };
+}
+
+function viewTiempo() {
+  const isWeek = state.tiempoPeriod !== 'mes';
+  let from, to, label;
+  if (isWeek) {
+    from = state.agendaWeek; to = addDays(from, 6);
+    label = `${fmtDate(from, { day: 'numeric', month: 'short' })} – ${fmtDate(to, { day: 'numeric', month: 'short' })}`;
+  } else {
+    const m = state.tiempoMonth;
+    from = todayStr(m); to = todayStr(new Date(m.getFullYear(), m.getMonth() + 1, 0));
+    label = cap(m.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' }));
+  }
+  const { totals, total, days } = timeByActivity(from, to);
+  const rows = Object.entries(totals).sort((a, b) => b[1].min - a[1].min);
+  const max = rows.length ? rows[0][1].min : 1;
+  const pct = min => total ? Math.round((min / total) * 100) : 0;
+
+  const bar = (labelText, min, sub = false) => `
+    <div class="grid grid-cols-[7.5rem_1fr_auto] sm:grid-cols-[10rem_1fr_auto] items-center gap-3 ${sub ? 'pl-3' : ''}" title="${esc(labelText)}: ${fmtHours(min)} (${pct(min)}%)">
+      <span class="${sub ? 'text-xs text-stone-500 font-semibold' : 'text-sm text-ink font-bold'} truncate">${esc(labelText)}</span>
+      <div class="${sub ? 'h-3' : 'h-5'} bg-cream rounded-r-md overflow-hidden">
+        <div class="h-full ${sub ? 'bg-blush-200' : 'bg-blush-300'} rounded-r-md" style="width:${Math.max(2, (min / max) * 100)}%"></div>
+      </div>
+      <span class="text-xs font-bold ${sub ? 'text-stone-400' : 'text-stone-600'} whitespace-nowrap tabular-nums">${fmtHours(min)}<span class="text-stone-400 font-semibold"> · ${pct(min)}%</span></span>
+    </div>`;
+
+  const stat = (lbl, value) => `<div class="bg-cream border border-[#E8DFD5] rounded-2xl p-3 text-center"><div class="font-display font-bold text-xl text-ink">${value}</div><div class="text-[11px] font-bold text-stone-500">${lbl}</div></div>`;
+
+  return `
+  ${card(`
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      ${segmented([{ value: 'semana', label: 'Semanal' }, { value: 'mes', label: 'Mensual' }], isWeek ? 'semana' : 'mes', 'tiempo-period')}
+      <div class="flex items-center justify-between sm:justify-end gap-2">
+        <button data-action="tiempo-move" data-value="-1" aria-label="Anterior" class="p-2 rounded-xl bg-cream hover:bg-blush-50 border border-[#E5DDD3]">${icon('chevron-left')}</button>
+        <span class="text-sm font-bold text-ink min-w-36 text-center">${label}</span>
+        <button data-action="tiempo-move" data-value="1" aria-label="Siguiente" class="p-2 rounded-xl bg-cream hover:bg-blush-50 border border-[#E5DDD3]">${icon('chevron-right')}</button>
+      </div>
+    </div>
+  `)}
+
+  <div class="grid grid-cols-3 gap-2.5">
+    ${stat('Horas anotadas', fmtHours(total))}
+    ${stat('Más tiempo en', rows.length ? esc(activityOf(rows[0][0]).label) : '--')}
+    ${stat('Días con plan', days)}
+  </div>
+
+  ${card(`
+    <h3 class="font-display font-bold text-lg text-ink">¿En qué se me va el tiempo?</h3>
+    <p class="text-xs text-stone-500 mb-4">Horas por actividad, de más a menos. Solo cuentan las actividades con hora de inicio y fin.</p>
+    ${rows.length ? `<div class="space-y-2.5">${rows.map(([cat, t]) => {
+      const subs = Object.entries(t.subs).sort((a, b) => b[1] - a[1]);
+      return bar(activityOf(cat).label, t.min) + (subs.length > 0 ? subs.map(([n, m]) => bar(n, m, true)).join('') : '');
+    }).join('')}</div>`
+    : `<p class="text-sm text-stone-400 text-center py-8">Aún no hay actividades con horario en este periodo. Agrégalas en la vista Semana.</p>`}
+  `, 'shadow-cute')}`;
 }
 
 function viewHorarioWeek() {
@@ -1681,11 +1910,9 @@ function viewHorarioWeek() {
         </div>
         ${eventsOn(ds).length ? `<div class="flex flex-wrap gap-1 mt-2">${eventsOn(ds).map(e => eventChip(e, true)).join('')}</div>` : ''}
         <ul class="divide-y divide-[#F0E8DF] mt-1">${items.map(it => agendaItem(it, 'day', d.key)).join('')}</ul>
-        <form data-submit="agenda-add" data-list="day" data-day="${d.key}" class="flex gap-1.5 mt-2">
-          <input name="time" type="time" aria-label="Hora (opcional)" class="w-[5.5rem] shrink-0 ${field} px-2">
-          <input name="text" maxlength="140" required placeholder="¿Qué harás?" aria-label="Actividad del ${d.label}" class="flex-1 min-w-0 ${field}">
-          <button type="submit" aria-label="Agregar" class="w-10 rounded-xl bg-paper border border-blush-200 text-blush-500 hover:bg-blush-100 flex items-center justify-center shrink-0">${icon('plus')}</button>
-        </form>
+        <button data-action="activity-new" data-day="${d.key}"
+          class="w-full mt-2 inline-flex items-center justify-center gap-1.5 text-xs font-bold text-blush-500 bg-paper border border-dashed border-blush-200 hover:bg-blush-50 rounded-xl py-2.5">
+          ${icon('plus', 'w-3.5 h-3.5')} ¿Qué harás?</button>
       </article>`;
     }).join('')}
   </div>`;
@@ -1866,6 +2093,70 @@ const ACTIONS = {
     openEventDay(el.dataset.date);
   },
 
+  // Mover / cambiar la rutina de hoy (solo para quien inició sesión)
+  async 'plan-tomorrow'() {
+    const today = todayStr();
+    const tomorrow = addDays(today, 1);
+    const todays = plannedDayKey(today);
+    await setPlan(tomorrow, todays);
+    await setPlan(today, 'descanso');
+    render();
+    showToast(`Listo: mañana haces ${state.routines[todays]?.title || 'la rutina de hoy'}`);
+  },
+  'plan-choose'() {
+    const today = todayStr();
+    const current = plannedDayKey(today);
+    const own = weekdayKey();
+    const option = (key, title, detail) => `
+      <button data-action="plan-set" data-value="${key}"
+        class="w-full text-left flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition-colors ${key === current ? 'bg-blush-50 border-blush-300' : 'bg-paper border-[#E8DFD5] hover:border-blush-200'}">
+        <span class="min-w-0"><span class="block text-sm font-bold text-ink">${title}</span><span class="block text-xs text-stone-500 truncate">${detail}</span></span>
+        ${key === current ? `<span class="text-blush-500 shrink-0">${icon('check')}</span>` : ''}
+      </button>`;
+    openModal(`
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-display font-bold text-xl text-ink">¿Qué rutina haces hoy?</h3>
+        <button data-action="close-modal" aria-label="Cerrar" class="text-stone-400 hover:text-ink">${icon('x', 'w-5 h-5')}</button>
+      </div>
+      <p class="text-xs text-stone-500 mb-4">Solo cambia tu día; el de tu amiga sigue igual.</p>
+      <div class="space-y-2">
+        ${DAYS.map(d => {
+          const r = state.routines[d.key];
+          return option(d.key, `${d.label}${d.key === own ? ' (la de hoy)' : ''}`, r.exercises.length ? `${esc(r.title)} · ${r.exercises.length} ejercicios` : 'Descanso');
+        }).join('')}
+        ${option('descanso', 'Descansar hoy', 'No rompe tu racha')}
+      </div>`);
+  },
+  async 'plan-set'(el) {
+    await setPlan(todayStr(), el.dataset.value);
+    closeModal();
+    render();
+    showToast('Rutina de hoy actualizada');
+  },
+  async 'plan-reset'() {
+    const today = todayStr();
+    const tomorrow = addDays(today, 1);
+    // Si la de hoy se había pasado a mañana, se deshace también
+    if (plannedDayKey(today) === 'descanso' && plannedDayKey(tomorrow) === weekdayKey()) await setPlan(tomorrow, null);
+    await setPlan(today, null);
+    render();
+    showToast('Volviste a la rutina del día');
+  },
+
+  // Horario: actividades y tiempo
+  'activity-new'(el) { openActivity(el.dataset.day); },
+  'tiempo-period'(el) { state.tiempoPeriod = el.dataset.value; render(); },
+  'tiempo-move'(el) {
+    const n = Number(el.dataset.value);
+    if (state.tiempoPeriod === 'mes') {
+      const m = state.tiempoMonth;
+      state.tiempoMonth = new Date(m.getFullYear(), m.getMonth() + n, 1);
+    } else {
+      state.agendaWeek = addDays(state.agendaWeek, 7 * n);
+    }
+    render();
+  },
+
   // Horario
   'agenda-week'(el) { state.agendaWeek = addDays(state.agendaWeek, Number(el.dataset.value)); render(); },
   'agenda-toggle'(el) {
@@ -1949,6 +2240,32 @@ const SUBMITS = {
     openEventDay(ds);
     showToast('Fecha guardada');
   },
+  async 'activity-add'(form) {
+    const cat = form.querySelector('input[name="cat"]:checked')?.value;
+    if (!cat) return showToast('Elige una actividad');
+    const a = activityOf(cat);
+    let sub = '';
+    const opts = myOptions();
+    if (a.sub) {
+      const typed = form.elements[`new-${a.sub}`].value.trim();
+      sub = typed || form.querySelector(`input[name="sub-${a.sub}"]:checked`)?.value || '';
+      if (!sub) return showToast(a.sub === 'work' ? 'Escribe en qué trabajarás' : 'Escribe qué estudiarás');
+      if (typed && !opts[a.sub].some(n => norm(n) === norm(typed))) {
+        opts[a.sub] = [...opts[a.sub], typed];
+        await saveOptions(opts);
+      }
+    }
+    const start = form.elements.time.value, end = form.elements.end.value;
+    if (!start || !end) return showToast('Pon la hora de inicio y de fin');
+    const doc = agendaDoc();
+    doc.days[form.dataset.day].push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      cat, sub, time: start, end, text: form.elements.note.value.trim(), done: false,
+    });
+    closeModal();
+    await saveAgenda(doc);
+    showToast(`${itemTitle({ cat, sub })} agregado`);
+  },
   async 'agenda-add'(form) {
     const text = form.text.value.trim();
     if (!text) return;
@@ -1975,6 +2292,12 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  // En "¿Qué harás?": mostrar la elección de trabajo/estudio solo cuando aplica
+  if (e.target.name === 'cat') {
+    const sub = activityOf(e.target.value)?.sub;
+    document.querySelectorAll('#modal-box [data-sub-for]').forEach(b => b.classList.toggle('hidden', b.dataset.subFor !== sub));
+    return;
+  }
   const el = e.target.closest('[data-change]');
   if (el && CHANGES[el.dataset.change]) CHANGES[el.dataset.change](el.value);
 });
@@ -2042,6 +2365,12 @@ function startData() {
       state.measurements = docs.sort((a, b) => b.date.localeCompare(a.date) || byNewest(a, b));
       scheduleRender();
     },
+    plans(docs) {
+      const map = {};
+      docs.forEach(({ id, ...rest }) => { map[id] = rest; });
+      state.plans = map;
+      scheduleRender();
+    },
     agenda(docs) {
       // La vista solo lee la clave "<usuaria>_<semana>" de quien inició sesión
       const map = {};
@@ -2056,7 +2385,7 @@ function startData() {
 
 function resetData() {
   Object.assign(state, {
-    routines: structuredClone(DEFAULT_ROUTINES), workouts: [], attendance: {}, wellness: {}, measurements: [], agenda: {},
+    routines: structuredClone(DEFAULT_ROUTINES), workouts: [], attendance: {}, wellness: {}, measurements: [], agenda: {}, plans: {},
     drafts: {}, wellDraft: null, measWho: null,
   });
 }

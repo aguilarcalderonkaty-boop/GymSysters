@@ -8,7 +8,10 @@
 // Si pones `firebaseConfig = null`, la app vuelve al "Modo local"
 // (datos solo en el navegador de cada una).
 
-export const firebaseConfig = {
+// Para probar sin tocar los datos reales: `npx vite --mode prueba` (usa .env.prueba.local con VITE_LOCAL_MODE=true)
+const LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === 'true';
+
+export const firebaseConfig = LOCAL_MODE ? null : {
   apiKey: 'AIzaSyCzSMFoAgtNEyVneF8zICrh0M5t8DxbWyA',
   authDomain: 'gym-systers.firebaseapp.com',
   projectId: 'gym-systers',

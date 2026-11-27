@@ -3,7 +3,7 @@
 import { SPACE_ID } from './firebase-config.js';
 import { getFirebase } from './firebase.js';
 
-const SHARED = ['attendance', 'workouts', 'wellness', 'measurements'];
+const SHARED = ['attendance', 'workouts', 'wellness', 'measurements', 'plans'];
 const PRIVATE = ['agenda']; // solo se leen los documentos de quien inició sesión
 const COLLECTIONS = [...SHARED, ...PRIVATE];
 const LOCAL_KEY = 'gym-systers-data-v2';

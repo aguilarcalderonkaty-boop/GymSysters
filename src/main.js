@@ -1677,15 +1677,22 @@ function viewHorarioCalendar() {
 
   ${card(`
     <h3 class="font-display font-bold text-lg text-ink mb-3">Próximas fechas</h3>
-    ${upcoming.length ? `<ul class="space-y-2">${upcoming.map(e => `
-      <li class="flex items-center gap-3">
-        <div class="w-12 text-center shrink-0">
-          <div class="font-display font-bold text-lg text-ink leading-none">${parseDate(e.on).getDate()}</div>
-          <div class="text-[10px] font-bold text-stone-400 uppercase">${fmtDate(e.on, { month: 'short' })}</div>
+    ${upcoming.length ? `<ul class="divide-y divide-[#F0E8DF]">${[...new Set(upcoming.map(e => e.on))].map(on => {
+      const evs = upcoming.filter(e => e.on === on);
+      const left = daysBetween(todayStr(), on);
+      const when = left === 0 ? 'Hoy' : left === 1 ? 'Mañana' : `En ${left} días`;
+      return `
+      <li class="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+        <div class="w-12 text-center shrink-0 pt-0.5">
+          <div class="font-display font-bold text-2xl text-ink leading-none">${parseDate(on).getDate()}</div>
+          <div class="text-[10px] font-bold text-stone-400 uppercase mt-0.5">${fmtDate(on, { month: 'short' })}</div>
         </div>
-        <div class="min-w-0 flex-1">${eventChip(e)}</div>
-        <span class="text-[11px] font-semibold text-stone-400 shrink-0">${e.on === todayStr() ? 'Hoy' : `en ${daysBetween(todayStr(), e.on)} d`}</span>
-      </li>`).join('')}</ul>`
+        <div class="min-w-0 flex-1">
+          <p class="text-xs font-bold text-stone-500 mb-1.5">${cap(fmtDate(on, { weekday: 'long' }))} · ${when}</p>
+          <div class="flex flex-wrap gap-1.5">${evs.map(e => eventChip(e)).join('')}</div>
+        </div>
+      </li>`;
+    }).join('')}</ul>`
     : `<p class="text-sm text-stone-400 text-center py-3">Sin fechas en los próximos 2 meses.</p>`}
   `)}`;
 }
